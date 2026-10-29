@@ -3,7 +3,7 @@ import base64
 import re
 import html
 from datetime import date
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_HALF_UP, ROUND_CEILING
 from pathlib import Path
 
 import pandas as pd
@@ -259,21 +259,29 @@ def make_pdf(customer, items):
         ])
 
     tax_total = sum(tax_by_rate.values(), Decimal("0.00"))
-    grand_total = money(subtotal + tax_total)
+    raw_grand_total = subtotal + tax_total
+    # Ceiling round: add paisas to eliminate trailing decimals and round to next whole rupee (.00)
+    grand_total = money(raw_grand_total.to_integral_value(rounding=ROUND_CEILING))
+    round_off = grand_total - raw_grand_total
 
     data.append(["", P("Subtotal", styles["CellBoldE"]), "", "", "", P(fmt(subtotal), styles["CellBoldE"])])
 
     if len(tax_by_rate) == 1:
         rate_pct = list(tax_by_rate.keys())[0]
         data.append(["", P(f"GST Total ({rate_pct:g}%)", styles["CellBoldE"]), "", "", "", P(fmt(tax_total), styles["CellBoldE"])])
-        summary_rows_count = 3
+        summary_rows_count = 2
     else:
         for rate_pct, tax_amt in sorted(tax_by_rate.items()):
             data.append(["", P(f"GST ({rate_pct:g}%)", styles["CellBoldE"]), "", "", "", P(fmt(tax_amt), styles["CellBoldE"])])
         data.append(["", P("GST Total", styles["CellBoldE"]), "", "", "", P(fmt(tax_total), styles["CellBoldE"])])
-        summary_rows_count = 2 + len(tax_by_rate)
+        summary_rows_count = 1 + len(tax_by_rate)
+
+    if round_off > 0:
+        data.append(["", P("Round Off", styles["CellBoldE"]), "", "", "", P(f"+{fmt(round_off)}", styles["CellBoldE"])])
+        summary_rows_count += 1
 
     data.append(["", P("Grand Total", styles["CellBoldE"]), "", "", "", P(fmt(grand_total), styles["CellBoldE"])])
+    summary_rows_count += 1
 
     table = Table(data, colWidths=[10 * mm, 68 * mm, 25 * mm, 25 * mm, 20 * mm, 30 * mm], repeatRows=1, hAlign="LEFT")
     table.setStyle(TableStyle([
@@ -591,10 +599,11 @@ for idx, item in enumerate(st.session_state["items"]):
             unsafe_allow_html=True,
         )
 
-        # Line Total Calculation & Display
+        # Line Total Calculation & Display (Ceiling rounded to whole rupees)
         line_subtotal = money(Decimal(str(item["rate"])) * Decimal(str(item["quantity"])))
         line_tax = money(line_subtotal * Decimal(str(item["gst"])) / Decimal("100"))
-        line_grand = money(line_subtotal + line_tax)
+        line_raw = line_subtotal + line_tax
+        line_grand = money(line_raw.to_integral_value(rounding=ROUND_CEILING))
         
         c_total.markdown(
             f"""
@@ -671,7 +680,9 @@ else:
         })
 
     tax_total = sum(tax_by_rate.values(), Decimal("0.00"))
-    grand_total = money(subtotal + tax_total)
+    raw_grand_total = subtotal + tax_total
+    grand_total = money(raw_grand_total.to_integral_value(rounding=ROUND_CEILING))
+    round_off = grand_total - raw_grand_total
 
     # Metrics summary cards
     if len(tax_by_rate) == 1:
@@ -683,7 +694,12 @@ else:
     m1, m2, m3 = st.columns(3)
     m1.metric("Subtotal", f"₹ {fmt(subtotal)}")
     m2.metric(gst_metric_title, f"₹ {fmt(tax_total)}")
-    m3.metric("Grand Total", f"₹ {fmt(grand_total)}")
+    m3.metric(
+        "Grand Total",
+        f"₹ {fmt(grand_total)}",
+        delta=f"+₹ {fmt(round_off)} (Round Off)" if round_off > 0 else None,
+        delta_color="off",
+    )
 
     st.dataframe(pd.DataFrame(preview_data), use_container_width=True, hide_index=True)
 

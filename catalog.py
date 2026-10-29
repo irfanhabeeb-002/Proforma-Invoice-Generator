@@ -9,7 +9,7 @@ CATALOG = {
         "default_hsn": "90280310",
         "items": [
             {"name": "3 Phase Net", "brand": "VisionTek", "hsn": "90280310", "rate": 5508.47},
-            {"name": "3 Phase Net", "brand": "L&T", "hsn": "90280310", "rate": 8475.57},
+            {"name": "3 Phase Net", "brand": "L&T", "hsn": "90280310", "rate": 8474.57},
             {"name": "3 Phase Uni", "brand": "VisionTek", "hsn": "90280310", "rate": 3347.45},
             {"name": "3 Phase Uni", "brand": "L&T", "hsn": "90280310", "rate": 4661.01},
             {"name": "HT Bi", "brand": "L&T", "hsn": "90280310", "rate": 50000.00},
