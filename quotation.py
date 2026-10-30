@@ -1,9 +1,10 @@
 """
 Quotation Generator module for Electrogen Sales Workplace.
-PDF builder + Streamlit UI — completely independent of make_pdf() in app.py.
+PDF builder + Streamlit UI aligned with the official Electrogen letterhead.
 """
 
 import io
+import re
 import html
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP, ROUND_CEILING
@@ -15,10 +16,8 @@ from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import mm
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (
-    SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image, HRFlowable,
+    SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image,
 )
 
 from quote_catalog import (
@@ -30,23 +29,13 @@ from quote_catalog import (
 )
 
 # ── Shared assets ─────────────────────────────────────────────────────────────
-BASE_DIR    = Path(__file__).resolve().parent
-LOGO_PATH   = BASE_DIR / "ElectrogenLogo.png"
-FONT_PATH   = BASE_DIR / "DejaVuSans.ttf"
-SIG_PATH    = BASE_DIR / "authorised_signature.png"
-BRAND_TEAL  = colors.HexColor("#006A67")
-BORDER_CLR  = colors.HexColor("#222222")
-LIGHT_BG    = colors.HexColor("#F0F5F5")
-COMPANY_NAME = "Electrogen Industries"
-SIGNATORY    = "Viji Thomas"
-
-# Register fonts here so quotation.py works even when imported before app.py
-# registers them (avoids duplicate-registration errors via a try/except).
-try:
-    pdfmetrics.registerFont(TTFont("ElectrogenSans",      str(FONT_PATH)))
-    pdfmetrics.registerFont(TTFont("ElectrogenSans-Bold", str(FONT_PATH)))
-except Exception:
-    pass  # already registered by app.py — that's fine
+BASE_DIR        = Path(__file__).resolve().parent
+LETTERHEAD_PATH = BASE_DIR / "image1.jpg"
+LOGO_PATH       = BASE_DIR / "ElectrogenLogo.png"
+SIG_PATH        = BASE_DIR / "authorised_signature.png"
+BRAND_TEAL      = colors.HexColor("#006A67")
+BORDER_CLR      = colors.HexColor("#222222")
+COMPANY_NAME    = "Electrogen Industries"
 
 # ── Decimal helpers ────────────────────────────────────────────────────────────
 def _money(value):
@@ -56,11 +45,9 @@ def _fmt(value):
     return f"{_money(value):,.2f}"
 
 def _ceil_rupee(value: Decimal) -> Decimal:
-    """Ceiling-round to the next whole rupee (no paisas on grand total)."""
+    """Ceiling-round to whole rupee (no paisas on grand total)."""
     return _money(value.to_integral_value(rounding=ROUND_CEILING))
 
-def _P(text, style):
-    return Paragraph(text, style)
 
 # ── PDF builder ────────────────────────────────────────────────────────────────
 def make_quotation_pdf(
@@ -72,209 +59,193 @@ def make_quotation_pdf(
     items: list,
     warranty_terms: str,
     payment_terms: str,
+    subject: str = "",
+    salutation: str = "Dear Sir,",
 ) -> bytes:
     """
-    Build and return a Quotation PDF as bytes.
+    Build and return a Quotation PDF on official Electrogen letterhead.
     items: list of dicts with keys description, quantity, rate, amount
     """
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer,
         pagesize=A4,
-        rightMargin=16 * mm,
-        leftMargin=16 * mm,
-        topMargin=12 * mm,
-        bottomMargin=12 * mm,
+        leftMargin=22 * mm,
+        rightMargin=22 * mm,
+        topMargin=38 * mm,    # starts comfortably below the letterhead header line
+        bottomMargin=18 * mm,
         title=f"Quotation {quote_ref}",
         author=COMPANY_NAME,
     )
 
+    def _draw_letterhead(canvas, document):
+        canvas.saveState()
+        if LETTERHEAD_PATH.exists():
+            canvas.drawImage(str(LETTERHEAD_PATH), 0, 0, width=210 * mm, height=297 * mm)
+        elif LOGO_PATH.exists():
+            # Fallback if letterhead image is not available
+            canvas.drawImage(str(LOGO_PATH), 22 * mm, (297 - 25) * mm, width=45 * mm, height=14 * mm, preserveAspectRatio=True)
+            canvas.setStrokeColor(BRAND_TEAL)
+            canvas.setLineWidth(1)
+            canvas.line(22 * mm, (297 - 28) * mm, (210 - 22) * mm, (297 - 28) * mm)
+        canvas.restoreState()
+
+    base_font = "Times-Roman"
+    bold_font = "Times-Bold"
+
     styles = getSampleStyleSheet()
-    styles.add(ParagraphStyle(name="QuoteTitleR",  fontName="ElectrogenSans-Bold", fontSize=14, leading=17,
-                              textColor=colors.white, alignment=TA_RIGHT))
-    styles.add(ParagraphStyle(name="QuoteSubR",    fontName="ElectrogenSans-Bold", fontSize=8.5, leading=11,
-                              textColor=colors.white, alignment=TA_RIGHT))
-    styles.add(ParagraphStyle(name="QuoteTitleC",  fontName="ElectrogenSans-Bold", fontSize=14, leading=17,
-                              textColor=colors.white, alignment=TA_CENTER))
-    styles.add(ParagraphStyle(name="QuoteSubC",    fontName="ElectrogenSans-Bold", fontSize=8.5, leading=11,
-                              textColor=colors.white, alignment=TA_CENTER))
-    styles.add(ParagraphStyle(name="SectionW",     fontName="ElectrogenSans-Bold", fontSize=9.5, leading=12,
-                              textColor=colors.white, leftIndent=5))
-    styles.add(ParagraphStyle(name="BodyE",        fontName="ElectrogenSans",      fontSize=9,  leading=13))
-    styles.add(ParagraphStyle(name="BodyBoldE",    fontName="ElectrogenSans-Bold", fontSize=9,  leading=13))
-    styles.add(ParagraphStyle(name="SmallE",       fontName="ElectrogenSans",      fontSize=8,  leading=10))
-    styles.add(ParagraphStyle(name="SmallBoldE",   fontName="ElectrogenSans-Bold", fontSize=8,  leading=10))
-    styles.add(ParagraphStyle(name="CellE",        fontName="ElectrogenSans",      fontSize=8,  leading=10))
-    styles.add(ParagraphStyle(name="CellBoldE",    fontName="ElectrogenSans-Bold", fontSize=8,  leading=10))
-    styles.add(ParagraphStyle(name="CellWhiteE",   fontName="ElectrogenSans-Bold", fontSize=8,  leading=10,
-                              textColor=colors.white, alignment=TA_CENTER))
-    styles.add(ParagraphStyle(name="CellRightE",   fontName="ElectrogenSans",      fontSize=8,  leading=10,
-                              alignment=TA_RIGHT))
-    styles.add(ParagraphStyle(name="CellBoldRight",fontName="ElectrogenSans-Bold", fontSize=8,  leading=10,
-                              alignment=TA_RIGHT))
+    styles.add(ParagraphStyle(name="QRefL",  fontName=bold_font, fontSize=10.5, leading=14))
+    styles.add(ParagraphStyle(name="QRefR",  fontName=bold_font, fontSize=10.5, leading=14, alignment=TA_RIGHT))
+    styles.add(ParagraphStyle(name="QTo",    fontName=bold_font, fontSize=10.5, leading=14))
+    styles.add(ParagraphStyle(name="QSub",   fontName=base_font, fontSize=10.5, leading=14))
+    styles.add(ParagraphStyle(name="QBody",  fontName=base_font, fontSize=10,   leading=14))
+    styles.add(ParagraphStyle(name="QTH",    fontName=bold_font, fontSize=9.5,  leading=12))
+    styles.add(ParagraphStyle(name="QTHR",   fontName=bold_font, fontSize=9.5,  leading=12, alignment=TA_RIGHT))
+    styles.add(ParagraphStyle(name="QTD",    fontName=base_font, fontSize=9.5,  leading=12))
+    styles.add(ParagraphStyle(name="QTDR",   fontName=base_font, fontSize=9.5,  leading=12, alignment=TA_RIGHT))
 
     story = []
 
-    # ── Header banner ─────────────────────────────────────────────────────────
-    if LOGO_PATH.exists():
-        logo = Image(str(LOGO_PATH), width=48 * mm, height=14.6 * mm, kind="proportional")
-        logo.hAlign = "LEFT"
-        header = Table(
-            [[logo, [_P("QUOTATION", styles["QuoteTitleR"]),
-                     _P(html.escape(COMPANY_NAME), styles["QuoteSubR"])]]],
-            colWidths=[55 * mm, 123 * mm],
-            rowHeights=[17 * mm],
-        )
-    else:
-        header = Table(
-            [[_P("QUOTATION", styles["QuoteTitleC"])],
-             [_P(html.escape(COMPANY_NAME), styles["QuoteSubC"])]],
-            colWidths=[178 * mm],
-            rowHeights=[10 * mm, 7 * mm],
-        )
-    header.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), BRAND_TEAL),
-        ("BOX",        (0, 0), (-1, -1), 1, BORDER_CLR),
-        ("VALIGN",     (0, 0), (-1, -1), "MIDDLE"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 6),
-        ("RIGHTPADDING",(0, 0), (-1, -1), 6),
-        ("TOPPADDING",  (0, 0), (-1, -1), 2),
-        ("BOTTOMPADDING",(0,0),(-1, -1), 2),
-    ]))
-    story += [header, Spacer(1, 7 * mm)]
-
-    # ── Ref / Date / Enquiry block ────────────────────────────────────────────
-    meta_left = [
-        _P(f"<b>Ref:</b> {html.escape(quote_ref)}", styles["SmallE"]),
-        _P(f"<b>Enquiry Ref:</b> {html.escape(enquiry_ref) if enquiry_ref else '—'}", styles["SmallE"]),
-    ]
-    meta_right = _P(
-        f"<b>Date:</b> {quote_date.strftime('%d.%m.%Y')}",
-        styles["SmallBoldE"],
-    )
-    meta = Table([[meta_left, "", meta_right]], colWidths=[80 * mm, 60 * mm, 38 * mm])
-    meta.setStyle(TableStyle([
+    # ── Ref & Date ────────────────────────────────────────────────────────────
+    formatted_date = quote_date.strftime("%d.%m.%y")
+    ref_tbl = Table([
+        [Paragraph(f"Ref: {html.escape(quote_ref)}", styles["QRefL"]),
+         Paragraph(f"DATE: {formatted_date}", styles["QRefR"])]
+    ], colWidths=[100 * mm, 66 * mm])
+    ref_tbl.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("ALIGN",  (2, 0), (2, 0),   "RIGHT"),
+        ("LEFTPADDING",  (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING",   (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING",(0, 0), (-1, -1), 0),
     ]))
-    story += [meta, Spacer(1, 4 * mm)]
-
-    # ── To block ──────────────────────────────────────────────────────────────
-    to_label = Table([[_P("TO", styles["SectionW"])]], colWidths=[20 * mm], rowHeights=[7 * mm])
-    to_label.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), BRAND_TEAL),
-        ("BOX",        (0, 0), (-1, -1), 0.8, BORDER_CLR),
-        ("VALIGN",     (0, 0), (-1, -1), "MIDDLE"),
-        ("LEFTPADDING",(0, 0), (-1, -1), 6),
-    ]))
-    story += [to_label, Spacer(1, 2 * mm)]
-    story.append(_P(f"<b>{html.escape(customer_name)}</b>", styles["BodyBoldE"]))
-    if customer_address.strip():
-        for line in customer_address.strip().split("\n"):
-            story.append(_P(html.escape(line.strip()), styles["BodyE"]))
+    story.append(ref_tbl)
     story.append(Spacer(1, 4 * mm))
 
-    # ── Subject / Dear block ──────────────────────────────────────────────────
-    # Determine subject from items
-    categories_present = set()
-    for it in items:
-        cat = it.get("category", "")
-        if cat:
-            categories_present.add(cat)
-    if categories_present:
-        subject_products = " & ".join(sorted(categories_present))
-    else:
-        subject_products = "Products"
+    # ── To block ──────────────────────────────────────────────────────────────
+    story.append(Paragraph("<b>To</b>", styles["QTo"]))
+    story.append(Paragraph(f"<b>{html.escape(customer_name)}</b>", styles["QTo"]))
+    if customer_address.strip():
+        for line in customer_address.strip().split("\n"):
+            if line.strip():
+                story.append(Paragraph(f"<b>{html.escape(line.strip())}</b>", styles["QTo"]))
+    story.append(Spacer(1, 4 * mm))
 
-    story.append(_P(f"<b>Sub:</b> Quotation for {html.escape(subject_products)}", styles["BodyE"]))
-    story.append(Spacer(1, 2 * mm))
-    story.append(_P("Dear Sir / Madam,", styles["BodyE"]))
+    # ── Sub & Ref (Enquiry) ───────────────────────────────────────────────────
+    if not subject.strip():
+        categories_present = [it.get("category") for it in items if it.get("category")]
+        unique_cats = sorted(set(categories_present))
+        if unique_cats:
+            subject = f"Quotation for {' & '.join(unique_cats)}"
+        else:
+            subject = "Quotation"
+
+    story.append(Paragraph(f"<b>Sub:</b> &nbsp; {html.escape(subject)}", styles["QSub"]))
+    if enquiry_ref.strip():
+        story.append(Paragraph(f"<b>Ref:</b> &nbsp; {html.escape(enquiry_ref.strip())}", styles["QSub"]))
     story.append(Spacer(1, 3 * mm))
-    story.append(_P(
+
+    # ── Salutation & Opening ──────────────────────────────────────────────────
+    story.append(Paragraph(html.escape(salutation), styles["QBody"]))
+    story.append(Spacer(1, 2 * mm))
+    story.append(Paragraph(
         "At the outset, we would like to thank you very much for your valuable enquiry and "
         "continued interest in our products and services.",
-        styles["SmallE"],
+        styles["QBody"],
     ))
-    story.append(_P(
-        "We ensure that we would deliver the best quality products as per your technical "
+    story.append(Spacer(1, 1.5 * mm))
+    story.append(Paragraph(
+        "We ensure that, we would deliver the best quality products as per your technical "
         "specifications and delivery requirements.",
-        styles["SmallE"],
+        styles["QBody"],
     ))
-    story.append(Spacer(1, 5 * mm))
+    story.append(Spacer(1, 1.5 * mm))
+    story.append(Paragraph(
+        "Thanking you and assuring you of our best quality products and services at all times.",
+        styles["QBody"],
+    ))
+    story.append(Spacer(1, 4 * mm))
 
-    # ── Items table ───────────────────────────────────────────────────────────
-    col_w = [10 * mm, 82 * mm, 22 * mm, 28 * mm, 30 * mm]  # total = 172 mm ≈ A4 usable
-    data = [[
-        _P("Sl.<br/>No", styles["CellWhiteE"]),
-        _P("Description",  styles["CellWhiteE"]),
-        _P("Quantity",      styles["CellWhiteE"]),
-        _P("Rate (₹)",      styles["CellWhiteE"]),
-        _P("Amount (₹)",    styles["CellWhiteE"]),
+    # ── Items Table ───────────────────────────────────────────────────────────
+    col_w = [12 * mm, 76 * mm, 18 * mm, 30 * mm, 30 * mm]  # total = 166 mm
+    table_data = [[
+        Paragraph("Sl.No", styles["QTH"]),
+        Paragraph("Description", styles["QTH"]),
+        Paragraph("Qty", styles["QTHR"]),
+        Paragraph("Rate (Rs.)", styles["QTHR"]),
+        Paragraph("Amount (Rs.)", styles["QTHR"]),
     ]]
 
     subtotal = Decimal("0.00")
     for idx, item in enumerate(items, 1):
         line = _money(Decimal(str(item["rate"])) * Decimal(str(item["quantity"])))
         subtotal += line
-        data.append([
-            _P(str(idx), styles["CellE"]),
-            _P(html.escape(item["description"]).replace("\n", "<br/>"), styles["CellE"]),
-            _P(str(item["quantity"]), styles["CellE"]),
-            _P(_fmt(item["rate"]), styles["CellRightE"]),
-            _P(_fmt(line), styles["CellRightE"]),
+        desc_text = html.escape(item["description"]).replace("\n", "<br/>")
+        table_data.append([
+            Paragraph(str(idx), styles["QTD"]),
+            Paragraph(desc_text, styles["QTD"]),
+            Paragraph(str(item["quantity"]), styles["QTDR"]),
+            Paragraph(f"{_money(item['rate']):,.2f}", styles["QTDR"]),
+            Paragraph(f"{line:,.2f}", styles["QTDR"]),
         ])
 
     grand_total = _ceil_rupee(subtotal)
+    table_data.append([
+        "",
+        Paragraph("TOTAL", styles["QTH"]),
+        "",
+        "",
+        Paragraph(f"Rs. {grand_total:,.2f}", styles["QTHR"]),
+    ])
 
-    data.append(["", _P("Total", styles["CellBoldE"]), "", "", _P(_fmt(grand_total), styles["CellBoldRight"])])
-
-    tbl = Table(data, colWidths=col_w, repeatRows=1, hAlign="LEFT")
+    tbl = Table(table_data, colWidths=col_w, hAlign="LEFT")
     tbl.setStyle(TableStyle([
-        ("BACKGROUND",   (0, 0), (-1, 0),  BRAND_TEAL),
-        ("GRID",         (0, 0), (-1, -1), 0.7, BORDER_CLR),
-        ("VALIGN",       (0, 0), (-1, -1), "MIDDLE"),
-        ("ALIGN",        (0, 0), (0, -1),  "CENTER"),
-        ("LEFTPADDING",  (0, 0), (-1, -1), 4),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-        ("TOPPADDING",   (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING",(0, 0), (-1, -1), 5),
-        ("BACKGROUND",   (0, -1), (-1, -1), LIGHT_BG),
-        ("LINEABOVE",    (0, -1), (-1, -1), 1.2, BORDER_CLR),
+        ("LINEABOVE",     (0, 0), (-1, 0),   1,   BRAND_TEAL),
+        ("LINEBELOW",     (0, 0), (-1, 0),   1,   BRAND_TEAL),
+        ("LINEABOVE",     (0, -1), (-1, -1), 1,   BRAND_TEAL),
+        ("LINEBELOW",     (0, -1), (-1, -1), 1.5, BRAND_TEAL),
+        ("VALIGN",        (0, 0), (-1, -1),  "MIDDLE"),
+        ("TOPPADDING",    (0, 0), (-1, -1),  3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1),  3),
+        ("LEFTPADDING",   (0, 0), (-1, -1),  2),
+        ("RIGHTPADDING",  (0, 0), (-1, -1),  2),
     ]))
-    story += [tbl, Spacer(1, 8 * mm)]
+    story.append(tbl)
+    story.append(Spacer(1, 5 * mm))
 
     # ── Terms & Conditions ────────────────────────────────────────────────────
-    story.append(_P("<b>General Terms &amp; Conditions</b>", styles["BodyBoldE"]))
-    story.append(Spacer(1, 3 * mm))
-    for i, term in enumerate(warranty_terms.strip().split("\n"), 1):
-        if term.strip():
-            story.append(_P(f"{i}. {html.escape(term.strip())}", styles["SmallE"]))
-    for j, term in enumerate(payment_terms.strip().split("\n"), i + 1):
-        if term.strip():
-            story.append(_P(f"{j}. {html.escape(term.strip())}", styles["SmallE"]))
-    story.append(Spacer(1, 3 * mm))
-
-    story.append(_P(
-        "Thanking you and assuring you of our best quality products and services at all times.",
-        styles["SmallE"],
-    ))
-    story.append(Spacer(1, 8 * mm))
-
-    # ── Signatory ─────────────────────────────────────────────────────────────
-    story.append(_P("Sincerely,", styles["BodyE"]))
-    story.append(_P(f"For <b>{html.escape(COMPANY_NAME)}</b>.", styles["BodyE"]))
+    story.append(Paragraph("<b>GENERAL TERMS &amp; CONDITIONS</b>", styles["QTo"]))
     story.append(Spacer(1, 2 * mm))
-    story.append(_P("<b>Authorised Signatory</b>", styles["BodyE"]))
-    story.append(Spacer(1, 2 * mm))
+
+    all_terms = []
+    for term in warranty_terms.strip().split("\n"):
+        if term.strip():
+            all_terms.append(term.strip())
+    for term in payment_terms.strip().split("\n"):
+        if term.strip():
+            all_terms.append(term.strip())
+
+    for idx, term in enumerate(all_terms, 1):
+        clean_text = re.sub(r"^\d+[\.\)]\s*", "", term)
+        story.append(Paragraph(f"{idx}) &nbsp; {html.escape(clean_text)}", styles["QBody"]))
+        story.append(Spacer(1, 1.5 * mm))
+
+    story.append(Spacer(1, 4 * mm))
+
+    # ── Closing & Signatory ───────────────────────────────────────────────────
+    story.append(Paragraph("Sincerely,", styles["QBody"]))
+    story.append(Paragraph(f"For <b>{html.escape(COMPANY_NAME)}.</b>", styles["QBody"]))
+
     if SIG_PATH.exists():
-        sig = Image(str(SIG_PATH), width=25 * mm, height=18 * mm, kind="proportional")
+        sig = Image(str(SIG_PATH), width=25 * mm, height=14 * mm, kind="proportional")
         sig.hAlign = "LEFT"
         story.append(sig)
     else:
-        story.append(Spacer(1, 14 * mm))
-    story.append(_P(f"<b>{html.escape(SIGNATORY)}</b>", styles["BodyE"]))
+        story.append(Spacer(1, 12 * mm))
 
-    doc.build(story)
+    story.append(Paragraph("<b>Authorized Signatory</b>", styles["QTo"]))
+
+    doc.build(story, onFirstPage=_draw_letterhead, onLaterPages=_draw_letterhead)
     return buffer.getvalue()
 
 
@@ -282,7 +253,6 @@ def make_quotation_pdf(
 def render_quotation_ui(logo_b64: str):
     """Render the complete Quotation Generator UI inside the Streamlit app."""
     from streamlit_pdf_viewer import pdf_viewer
-    import re
     import pandas as pd
 
     today = date.today()
@@ -300,13 +270,14 @@ def render_quotation_ui(logo_b64: str):
         st.session_state["qt_ref"]              = f"Electrogen/Mktg Qt {str(today.year)[-2:]}-{str(today.year + 1)[-2:]}"
     if "qt_date"             not in st.session_state:
         st.session_state["qt_date"]             = today
+    if "qt_subject"          not in st.session_state:
+        st.session_state["qt_subject"]          = "Quotation for Home UPS & Tubular battery"
     if "qt_enquiry_ref"      not in st.session_state:
         st.session_state["qt_enquiry_ref"]      = ""
+    if "qt_salutation"       not in st.session_state:
+        st.session_state["qt_salutation"]       = "Dear Sir,"
     if "qt_warranty"         not in st.session_state:
-        st.session_state["qt_warranty"]         = (
-            "Guarantee for UPS: 1 Year\n"
-            "Guarantee for Battery: 3 Years"
-        )
+        st.session_state["qt_warranty"]         = "Guarantee for UPS 1 Year and for battery Three years"
     if "qt_payment"          not in st.session_state:
         st.session_state["qt_payment"]          = "100% Advance Payment."
     if "qt_items"            not in st.session_state:
@@ -318,7 +289,7 @@ def render_quotation_ui(logo_b64: str):
 
     # ── Step 1: Customer & Quote details ──────────────────────────────────────
     st.subheader("1. Quotation Details")
-    c1, c2, c3, c4 = st.columns([2, 1.2, 1, 1.5])
+    c1, c2, c3 = st.columns([2, 1.2, 1])
     st.session_state["qt_customer_name"] = c1.text_input(
         "Customer Name",
         value=st.session_state["qt_customer_name"],
@@ -335,18 +306,33 @@ def render_quotation_ui(logo_b64: str):
         value=st.session_state["qt_date"],
         key="qt_date_inp",
     )
-    st.session_state["qt_enquiry_ref"] = c4.text_input(
-        "Enquiry Reference",
+
+    c4, c5 = st.columns([2, 2])
+    st.session_state["qt_subject"] = c4.text_input(
+        "Subject",
+        value=st.session_state["qt_subject"],
+        placeholder="e.g. Quotation for Home UPS & Tubular battery",
+        key="qt_subj_inp",
+    )
+    st.session_state["qt_enquiry_ref"] = c5.text_input(
+        "Enquiry Reference (optional)",
         value=st.session_state["qt_enquiry_ref"],
         placeholder="e.g. Your Enquiry Dated 23.10.26",
         key="qt_enq_ref_inp",
     )
-    st.session_state["qt_customer_address"] = st.text_area(
-        "Customer Address",
+
+    ca1, ca2 = st.columns([3, 1])
+    st.session_state["qt_customer_address"] = ca1.text_area(
+        "Customer Address / Location",
         value=st.session_state["qt_customer_address"],
-        placeholder="City / full address (optional)",
+        placeholder="e.g. Ernakulam",
         height=68,
         key="qt_addr_inp",
+    )
+    st.session_state["qt_salutation"] = ca2.text_input(
+        "Salutation",
+        value=st.session_state["qt_salutation"],
+        key="qt_salut_inp",
     )
 
     st.divider()
@@ -448,8 +434,8 @@ def render_quotation_ui(logo_b64: str):
                 key=f"qt_qty_{item_id}",
             )
 
-            line_raw   = _money(Decimal(str(item["rate"])) * Decimal(str(item["quantity"])))
-            line_ceil  = _ceil_rupee(line_raw)
+            line_raw  = _money(Decimal(str(item["rate"])) * Decimal(str(item["quantity"])))
+            line_ceil = _ceil_rupee(line_raw)
             line_col.markdown(
                 f"""
                 <div style="padding: 2px 0 0 4px;">
@@ -485,14 +471,14 @@ def render_quotation_ui(logo_b64: str):
     st.session_state["qt_warranty"] = tc1.text_area(
         "Guarantee / Warranty Terms",
         value=st.session_state["qt_warranty"],
-        height=100,
+        height=90,
         key="qt_warranty_inp",
         help="One term per line. Each line becomes a numbered point.",
     )
     st.session_state["qt_payment"] = tc2.text_area(
         "Payment Terms",
         value=st.session_state["qt_payment"],
-        height=100,
+        height=90,
         key="qt_payment_inp",
         help="One term per line.",
     )
@@ -506,7 +492,9 @@ def render_quotation_ui(logo_b64: str):
     customer_address = st.session_state["qt_customer_address"]
     quote_ref        = st.session_state["qt_ref"]
     quote_date       = st.session_state["qt_date"]
+    subject          = st.session_state["qt_subject"]
     enquiry_ref      = st.session_state["qt_enquiry_ref"]
+    salutation       = st.session_state["qt_salutation"]
 
     valid_items = [
         it for it in st.session_state["qt_items"]
@@ -527,15 +515,14 @@ def render_quotation_ui(logo_b64: str):
                 "Sl. No": idx,
                 "Description": it["description"],
                 "Quantity": it["quantity"],
-                "Rate (₹)": f"₹ {_fmt(it['rate'])}",
-                "Amount (₹)": f"₹ {_fmt(line)}",
+                "Rate (Rs.)": f"Rs. {_fmt(it['rate'])}",
+                "Amount (Rs.)": f"Rs. {_fmt(line)}",
             })
         grand_ceil = _ceil_rupee(grand)
 
-        import pandas as pd
         m1, m2 = st.columns(2)
         m1.metric("Items", len(valid_items))
-        m2.metric("Grand Total", f"₹ {_fmt(grand_ceil)}")
+        m2.metric("Grand Total", f"Rs. {_fmt(grand_ceil)}")
         st.dataframe(pd.DataFrame(preview_rows), use_container_width=True, hide_index=True)
 
         # Build PDF
@@ -548,6 +535,8 @@ def render_quotation_ui(logo_b64: str):
             items=[{**it, "amount": _money(Decimal(str(it["rate"])) * Decimal(str(it["quantity"])))} for it in valid_items],
             warranty_terms=st.session_state["qt_warranty"],
             payment_terms=st.session_state["qt_payment"],
+            subject=subject,
+            salutation=salutation,
         )
         pdf_filename = f"Electrogen_Quote_{quote_date.year}_{safe_fn(customer_name)}.pdf"
 

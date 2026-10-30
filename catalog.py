@@ -145,7 +145,7 @@ CATALOG = {
         "default_gst": 18.0,
         "default_hsn": "",
         "items": [
-            {"name": "Water Level Controller", "brand": "Electrogen", "hsn": "", "rate": 0.00},
+            {"name": "Water Level Controller", "brand": "Electrogen", "hsn": "", "rate": 2250.00},
         ],
     },
 }
