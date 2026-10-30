@@ -10,18 +10,18 @@ CATALOG = {
         "items": [
             {"name": "3 Phase Net", "brand": "VisionTek", "hsn": "90280310", "rate": 5508.47},
             {"name": "3 Phase Net", "brand": "L&T", "hsn": "90280310", "rate": 8474.57},
-            {"name": "3 Phase Uni", "brand": "VisionTek", "hsn": "90280310", "rate": 3347.45},
-            {"name": "3 Phase Uni", "brand": "L&T", "hsn": "90280310", "rate": 4661.01},
-            {"name": "HT Bi", "brand": "L&T", "hsn": "90280310", "rate": 50000.00},
-            {"name": "HT Uni", "brand": "L&T", "hsn": "90280310", "rate": 36600.00},
-            {"name": "LT BI", "brand": "VisionTek", "hsn": "90280310", "rate": 12205.08},
-            {"name": "LT BI", "brand": "L&T", "hsn": "90280310", "rate": 19305.08},
-            {"name": "LT UNI", "brand": "VisionTek", "hsn": "90280310", "rate": 12105.08},
-            {"name": "LT UNI", "brand": "L&T", "hsn": "90280310", "rate": 16525.42},
+            {"name": "3 Phase Unidirectional", "brand": "VisionTek", "hsn": "90280310", "rate": 3347.45},
+            {"name": "3 Phase Unidirectional", "brand": "L&T", "hsn": "90280310", "rate": 4661.01},
+            {"name": "HT Bidirectional", "brand": "L&T", "hsn": "90280310", "rate": 50000.00},
+            {"name": "HT Unidirectional", "brand": "L&T", "hsn": "90280310", "rate": 36600.00},
+            {"name": "LT Bidirectional", "brand": "VisionTek", "hsn": "90280310", "rate": 12205.08},
+            {"name": "LT Bidirectional", "brand": "L&T", "hsn": "90280310", "rate": 19305.08},
+            {"name": "LT Unidirectional", "brand": "VisionTek", "hsn": "90280310", "rate": 12105.08},
+            {"name": "LT Unidirectional", "brand": "L&T", "hsn": "90280310", "rate": 16525.42},
             {"name": "Single Net", "brand": "VisionTek", "hsn": "90280310", "rate": 2627.11},
             {"name": "Single Phase Net", "brand": "L&T", "hsn": "90280310", "rate": 3156.77},
-            {"name": "Single Phase Uni", "brand": "VisionTek", "hsn": "90280310", "rate": 1186.44},
-            {"name": "Single Phase Uni", "brand": "L&T", "hsn": "90280310", "rate": 1419.49},
+            {"name": "Single Phase Unidirectional", "brand": "VisionTek", "hsn": "90280310", "rate": 1186.44},
+            {"name": "Single Phase Unidirectional", "brand": "L&T", "hsn": "90280310", "rate": 1419.49},
         ],
     },
     "Current transformers (CT)": {
@@ -44,7 +44,7 @@ CATALOG = {
             {"name": "Water Meter 15 MM", "brand": "Everest", "hsn": "", "rate": 0.00},
         ],
     },
-    "VisionTek solar inverters": {
+    "VisionTek Ongrid inverters": {
         "default_gst": 5.0,
         "default_hsn": "85044010",
         "items": [

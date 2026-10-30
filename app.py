@@ -2,6 +2,8 @@ import io
 import base64
 import re
 import html
+import socket
+import datetime
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP, ROUND_CEILING
 from pathlib import Path
@@ -130,7 +132,18 @@ st.markdown(
 )
 
 today = date.today()
-pi_no = f"Electrogen/{str(today.year)[-2:]}"
+
+def get_pi_no(customer_name: str = "") -> str:
+    raw_hostname = socket.gethostname()
+    hostname = raw_hostname.split(".")[0] if "." in raw_hostname else raw_hostname
+    hostname = re.sub(r"[^A-Za-z0-9_-]+", "_", hostname).strip("_") or "HOST"
+    date_str = datetime.datetime.now().strftime("%Y%m%d")
+    safe_cust = safe_filename(customer_name) if customer_name and customer_name.strip() else ""
+    if safe_cust and safe_cust != "Customer":
+        return f"PI-{hostname}-{date_str}-{safe_cust}"
+    return f"PI-{hostname}-{date_str}"
+
+pi_no = get_pi_no("")
 
 # Helper financial math functions
 def money(value):
@@ -147,7 +160,8 @@ def P(text, style):
     return Paragraph(text, style)
 
 # PDF Generation Function
-def make_pdf(customer, items):
+def make_pdf(customer, items, pi_no_override=None):
+    current_pi = pi_no_override or get_pi_no(customer)
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -156,7 +170,7 @@ def make_pdf(customer, items):
         leftMargin=16 * mm,
         topMargin=13 * mm,
         bottomMargin=13 * mm,
-        title=f"Proforma Invoice {pi_no}",
+        title=f"Proforma Invoice {current_pi}",
         author="Electrogen Industries",
     )
     styles = getSampleStyleSheet()
@@ -171,6 +185,7 @@ def make_pdf(customer, items):
     styles.add(ParagraphStyle(name="Section", fontName="ElectrogenSans-Bold", fontSize=10, leading=12,
                               textColor=colors.white, leftIndent=5))
     styles.add(ParagraphStyle(name="BodyE", fontName="ElectrogenSans", fontSize=9, leading=12))
+    styles.add(ParagraphStyle(name="BodyBoldE", fontName="ElectrogenSans-Bold", fontSize=9, leading=12))
     styles.add(ParagraphStyle(name="SmallE", fontName="ElectrogenSans", fontSize=8, leading=10))
     styles.add(ParagraphStyle(name="SmallBoldE", fontName="ElectrogenSans-Bold", fontSize=8, leading=10))
     styles.add(ParagraphStyle(name="CellE", fontName="ElectrogenSans", fontSize=7.5, leading=9.5))
@@ -217,7 +232,7 @@ def make_pdf(customer, items):
     bill = Table([[
         P("BILL TO", styles["Section"]),
         "",
-        P(f"<b>Date:</b> {today.strftime('%d.%m.%Y')}<br/><b>P.I No:</b> {html.escape(pi_no)}", styles["SmallBoldE"]),
+        P(f"<b>Date:</b> {today.strftime('%d.%m.%Y')}<br/><b>P.I No:</b> {html.escape(current_pi)}", styles["SmallBoldE"]),
     ]], colWidths=[50 * mm, 63 * mm, 65 * mm])
     bill.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (0, 0), BRAND_TEAL),
@@ -291,7 +306,30 @@ def make_pdf(customer, items):
         ("BACKGROUND", (0, -summary_rows_count), (-1, -1), colors.HexColor("#F0F5F5")),
         ("LINEABOVE", (0, -1), (-1, -1), 1.2, BORDER),
     ]))
-    story += [table, Spacer(1, 9 * mm), P("Kindly make the payment to the following bank account.", styles["BodyE"]), Spacer(1, 6 * mm)]
+    has_hoymiles = any(
+        "hoymiles" in str(it.get("category", "")).lower()
+        or "hoymiles" in str(it.get("brand", "")).lower()
+        or "hoymiles" in str(it.get("description", "")).lower()
+        for it in items
+    )
+
+    story += [table, Spacer(1, 5 * mm)]
+
+    story.append(P("<b>Additional Info.:</b>", styles["BodyBoldE"]))
+    story.append(Spacer(1, 1.5 * mm))
+    story.append(P("• &nbsp; Kindly forward the transaction receipt or screenshot of the payment via email or WhatsApp.", styles["SmallE"]))
+
+    if has_hoymiles:
+        story.append(Spacer(1, 1 * mm))
+        story.append(P("• &nbsp; When the inverter and battery are purchased and used together as a complete system, both products are covered by a 10-year warranty.", styles["SmallE"]))
+        story.append(Spacer(1, 1 * mm))
+        story.append(P("• &nbsp; If either the inverter or battery is used with a different brand of battery or inverter, respectively, the applicable coverage will be limited to a 5-year warranty.", styles["SmallE"]))
+        story.append(Spacer(1, 1 * mm))
+        story.append(P("• &nbsp; Transportation Charges Extra At Actuals", styles["SmallE"]))
+
+    story.append(Spacer(1, 4 * mm))
+    story.append(P("Kindly make the payment to the following bank account.", styles["BodyE"]))
+    story.append(Spacer(1, 3 * mm))
 
     # Bank Details
     bank_data = [
@@ -314,11 +352,7 @@ def make_pdf(customer, items):
     ]))
     story += [
         bank,
-        Spacer(1, 8 * mm),
-        P("<b>Additional Info.</b>", styles["BodyE"]),
-        Spacer(1, 2 * mm),
-        P("• Kindly forward the transaction receipt or screenshot of the payment via email or WhatsApp.", styles["SmallE"]),
-        Spacer(1, 7 * mm),
+        Spacer(1, 5 * mm),
     ]
 
     # Authorised Signatory
@@ -370,7 +404,7 @@ is_quote_mode = st.session_state["app_mode"] == "Quotation Generator"
 header_title = "Quotation Generator" if is_quote_mode else "Proforma Invoice Generator"
 header_sub = "Electrogen Sales Workplace" if is_quote_mode else f"GSTIN: {GSTIN} &nbsp;|&nbsp; Electrogen Sales Workplace"
 header_ref_label = "Qt Ref" if is_quote_mode else "P.I No"
-header_ref_val = "Electrogen/Mktg" if is_quote_mode else pi_no
+header_ref_val = "Electrogen/Mktg" if is_quote_mode else get_pi_no(st.session_state.get("customer_name", ""))
 
 if logo_b64:
     st.markdown(
@@ -448,7 +482,8 @@ customer_name = st.text_input(
 )
 st.session_state["customer_name"] = customer_name
 
-st.caption(f"Invoice Date: **{today.strftime('%d.%m.%Y')}** &nbsp;·&nbsp; P.I Number: **{pi_no}**")
+current_pi_display = get_pi_no(customer_name)
+st.caption(f"Invoice Date: **{today.strftime('%d.%m.%Y')}** &nbsp;·&nbsp; P.I Number: **{current_pi_display}**")
 
 st.divider()
 
@@ -543,10 +578,12 @@ for idx, item in enumerate(st.session_state["items"]):
                     item["edit_mode"] = False
                 st.rerun()
 
-        # Custom Description if manual entry
-        if item.get("is_custom"):
+        is_ct = (item.get("category") == "Current transformers (CT)" or "CT" in str(item.get("category", "")).upper())
+
+        # Custom Description if manual entry or if CT product with edit_mode enabled
+        if item.get("is_custom") or (is_ct and item.get("edit_mode")):
             item["description"] = st.text_input(
-                "Custom Item Description",
+                "Custom Item Description" if item.get("is_custom") else "Product / Description (Editable)",
                 value=item.get("description", ""),
                 placeholder="Enter custom product name / particulars...",
                 key=f"custom_desc_{item_id}",
@@ -654,8 +691,9 @@ for idx, item in enumerate(st.session_state["items"]):
         )
 
         # Small option to toggle custom rate override for catalog items if needed
-        if item.get("product_key") and not item.get("is_custom") and item.get("rate", 0.0) > 0:
-            override = st.checkbox("✏️ Edit Rate / HSN manually for this item", value=item.get("edit_mode", False), key=f"edit_toggle_{item_id}")
+        if item.get("product_key") and not item.get("is_custom"):
+            checkbox_label = "✏️ Edit Product Description / Rate / HSN manually for this item" if is_ct else "✏️ Edit Rate / HSN manually for this item"
+            override = st.checkbox(checkbox_label, value=item.get("edit_mode", False), key=f"edit_toggle_{item_id}")
             if override != item.get("edit_mode", False):
                 item["edit_mode"] = override
                 st.rerun()
@@ -736,11 +774,15 @@ else:
     st.dataframe(pd.DataFrame(preview_data), use_container_width=True, hide_index=True)
 
     # Generate PDF
-    pdf_bytes, _, _, _ = make_pdf(customer_name, valid_items)
-    pdf_filename = f"Electrogen_PI_{today.year}_{safe_filename(customer_name)}.pdf"
+    current_pi_no = get_pi_no(customer_name)
+    pdf_filename = f"{current_pi_no}.pdf"
+
+    pdf_bytes, _, _, _ = make_pdf(customer_name, valid_items, pi_no_override=current_pi_no)
 
     import hashlib
     pdf_hash = hashlib.md5(pdf_bytes).hexdigest()[:8]
+
+    st.write(f"**Generated Filename:** `{pdf_filename}`")
 
     st.download_button(
         label=f"⬇ Download Proforma Invoice PDF ({pdf_filename})",
@@ -749,6 +791,7 @@ else:
         mime="application/pdf",
         type="primary",
         use_container_width=True,
+        disabled=not bool(customer_name.strip()),
         key=f"download_pdf_{pdf_hash}",
     )
 
