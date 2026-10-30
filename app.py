@@ -44,7 +44,7 @@ pdfmetrics.registerFont(TTFont("ElectrogenSans", str(FONT_PATH)))
 pdfmetrics.registerFont(TTFont("ElectrogenSans-Bold", str(FONT_PATH)))
 
 st.set_page_config(
-    page_title="Electrogen — Proforma Invoice Generator",
+    page_title="Electrogen — Sales Workplace",
     page_icon="🧾",
     layout="wide",
 )
@@ -336,6 +336,9 @@ def make_pdf(customer, items):
     doc.build(story)
     return buffer.getvalue(), float(subtotal), float(tax_total), float(grand_total)
 
+# ---- QUOTATION MODULE IMPORT ----
+from quotation import render_quotation_ui
+
 # ---- APP HEADER UI ----
 logo_b64 = ""
 if LOGO_PATH.exists():
@@ -370,8 +373,39 @@ if logo_b64:
         unsafe_allow_html=True,
     )
 else:
-    st.title("Electrogen — Proforma Invoice Generator")
-    st.caption("Official Sales Workplace Proforma Invoice Generator")
+    st.title("Electrogen — Sales Workplace")
+    st.caption("Official Electrogen Sales Workplace")
+
+# ---- MODE TOGGLE ----
+if "app_mode" not in st.session_state:
+    st.session_state["app_mode"] = "Proforma Invoice Generator"
+
+mode = st.radio(
+    "Select Generator",
+    options=["Proforma Invoice Generator", "Quotation Generator"],
+    index=["Proforma Invoice Generator", "Quotation Generator"].index(
+        st.session_state["app_mode"]
+    ),
+    horizontal=True,
+    key="app_mode_radio",
+    label_visibility="collapsed",
+)
+if mode != st.session_state["app_mode"]:
+    st.session_state["app_mode"] = mode
+    st.rerun()
+
+st.markdown("---")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# QUOTATION GENERATOR
+# ─────────────────────────────────────────────────────────────────────────────
+if st.session_state["app_mode"] == "Quotation Generator":
+    render_quotation_ui(logo_b64)
+    st.stop()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PROFORMA INVOICE GENERATOR  (everything below is unchanged)
+# ─────────────────────────────────────────────────────────────────────────────
 
 # ---- SESSION STATE INITIALIZATION ----
 if "customer_name" not in st.session_state:
