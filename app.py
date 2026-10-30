@@ -336,45 +336,11 @@ def make_pdf(customer, items):
     doc.build(story)
     return buffer.getvalue(), float(subtotal), float(tax_total), float(grand_total)
 
-# ---- QUOTATION MODULE IMPORT ----
+# ---- QUOTATION MODULE IMPORT (force fresh reload) ----
+import importlib
+import quotation
+importlib.reload(quotation)
 from quotation import render_quotation_ui
-
-# ---- APP HEADER UI ----
-logo_b64 = ""
-if LOGO_PATH.exists():
-    with open(LOGO_PATH, "rb") as f:
-        logo_b64 = base64.b64encode(f.read()).decode()
-
-if logo_b64:
-    st.markdown(
-        f"""
-        <div style="background: linear-gradient(135deg, #005653 0%, #006A67 100%); 
-                    padding: 16px 24px; 
-                    border-radius: 10px; 
-                    display: flex; 
-                    flex-wrap: wrap;
-                    align-items: center; 
-                    justify-content: space-between; 
-                    margin-bottom: 24px; 
-                    box-shadow: 0 4px 12px rgba(0, 106, 103, 0.2);">
-            <div style="display: flex; align-items: center; gap: 18px;">
-                <img src="data:image/png;base64,{logo_b64}" style="height: 46px; max-width: 190px; object-fit: contain;" />
-                <div style="border-left: 2px solid rgba(255,255,255,0.3); padding-left: 16px; color: white;">
-                    <div style="font-size: 1.25rem; font-weight: 700; letter-spacing: 0.5px;">Proforma Invoice Generator</div>
-                    <div style="font-size: 0.82rem; opacity: 0.9;">GSTIN: {GSTIN} &nbsp;|&nbsp; Electrogen Sales Workplace</div>
-                </div>
-            </div>
-            <div style="color: white; text-align: right; font-size: 0.85rem; opacity: 0.95;">
-                <div><b>Date:</b> {today.strftime('%d.%m.%Y')}</div>
-                <div><b>P.I No:</b> {pi_no}</div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-else:
-    st.title("Electrogen — Sales Workplace")
-    st.caption("Official Electrogen Sales Workplace")
 
 # ---- MODE TOGGLE ----
 if "app_mode" not in st.session_state:
@@ -393,6 +359,49 @@ mode = st.radio(
 if mode != st.session_state["app_mode"]:
     st.session_state["app_mode"] = mode
     st.rerun()
+
+# ---- APP HEADER UI ----
+logo_b64 = ""
+if LOGO_PATH.exists():
+    with open(LOGO_PATH, "rb") as f:
+        logo_b64 = base64.b64encode(f.read()).decode()
+
+is_quote_mode = st.session_state["app_mode"] == "Quotation Generator"
+header_title = "Quotation Generator" if is_quote_mode else "Proforma Invoice Generator"
+header_sub = "Electrogen Sales Workplace" if is_quote_mode else f"GSTIN: {GSTIN} &nbsp;|&nbsp; Electrogen Sales Workplace"
+header_ref_label = "Qt Ref" if is_quote_mode else "P.I No"
+header_ref_val = "Electrogen/Mktg" if is_quote_mode else pi_no
+
+if logo_b64:
+    st.markdown(
+        f"""
+        <div style="background: linear-gradient(135deg, #005653 0%, #006A67 100%); 
+                    padding: 16px 24px; 
+                    border-radius: 10px; 
+                    display: flex; 
+                    flex-wrap: wrap;
+                    align-items: center; 
+                    justify-content: space-between; 
+                    margin-bottom: 24px; 
+                    box-shadow: 0 4px 12px rgba(0, 106, 103, 0.2);">
+            <div style="display: flex; align-items: center; gap: 18px;">
+                <img src="data:image/png;base64,{logo_b64}" style="height: 46px; max-width: 190px; object-fit: contain;" />
+                <div style="border-left: 2px solid rgba(255,255,255,0.3); padding-left: 16px; color: white;">
+                    <div style="font-size: 1.25rem; font-weight: 700; letter-spacing: 0.5px;">{header_title}</div>
+                    <div style="font-size: 0.82rem; opacity: 0.9;">{header_sub}</div>
+                </div>
+            </div>
+            <div style="color: white; text-align: right; font-size: 0.85rem; opacity: 0.95;">
+                <div><b>Date:</b> {today.strftime('%d.%m.%Y')}</div>
+                <div><b>{header_ref_label}:</b> {header_ref_val}</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+else:
+    st.title(f"Electrogen — {header_title}")
+    st.caption("Official Electrogen Sales Workplace")
 
 st.markdown("---")
 
@@ -730,6 +739,9 @@ else:
     pdf_bytes, _, _, _ = make_pdf(customer_name, valid_items)
     pdf_filename = f"Electrogen_PI_{today.year}_{safe_filename(customer_name)}.pdf"
 
+    import hashlib
+    pdf_hash = hashlib.md5(pdf_bytes).hexdigest()[:8]
+
     st.download_button(
         label=f"⬇ Download Proforma Invoice PDF ({pdf_filename})",
         data=pdf_bytes,
@@ -737,6 +749,7 @@ else:
         mime="application/pdf",
         type="primary",
         use_container_width=True,
+        key=f"download_pdf_{pdf_hash}",
     )
 
     st.markdown("#### Embedded PDF Document Preview")
@@ -744,7 +757,7 @@ else:
         input=pdf_bytes,
         width="100%",
         height=850,
-        key="proforma_pdf_preview",
+        key=f"proforma_pdf_preview_{pdf_hash}",
     )
 
 with st.expander("ℹ️ Company & Bank Configuration Details"):

@@ -540,6 +540,9 @@ def render_quotation_ui(logo_b64: str):
         )
         pdf_filename = f"Electrogen_Quote_{quote_date.year}_{safe_fn(customer_name)}.pdf"
 
+        import hashlib
+        pdf_hash = hashlib.md5(pdf_bytes).hexdigest()[:8]
+
         st.download_button(
             label=f"⬇ Download Quotation PDF ({pdf_filename})",
             data=pdf_bytes,
@@ -547,7 +550,7 @@ def render_quotation_ui(logo_b64: str):
             mime="application/pdf",
             type="primary",
             use_container_width=True,
-            key="qt_download",
+            key=f"qt_download_{pdf_hash}",
         )
 
         st.markdown("#### Embedded Quotation Preview")
@@ -555,5 +558,5 @@ def render_quotation_ui(logo_b64: str):
             input=pdf_bytes,
             width="100%",
             height=800,
-            key="quotation_pdf_preview",
+            key=f"quotation_pdf_preview_{pdf_hash}",
         )
