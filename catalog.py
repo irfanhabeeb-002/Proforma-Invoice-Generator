@@ -28,20 +28,23 @@ CATALOG = {
         "default_gst": 18.0,
         "default_hsn": "85043100",
         "items": [
-            {"name": "CT 75/5A, VA-5", "brand": "", "hsn": "85043100", "rate": 0.00},
+            {"name": "CT 75/5A, VA-5", "brand": "", "hsn": "85043100", "rate": 2225.00},
             {"name": "CT 100/5A, VA-5", "brand": "", "hsn": "85043100", "rate": 1775.00},
-            {"name": "CT 125/5A, VA-5", "brand": "", "hsn": "85043100", "rate": 0.00},
+            {"name": "CT 125/5A, VA-5", "brand": "", "hsn": "85043100", "rate": 2225.00},
             {"name": "CT 200/5A, VA-5", "brand": "", "hsn": "85043100", "rate": 1575.00},
             {"name": "CT 150/5A, VA-5", "brand": "", "hsn": "85043100", "rate": 1675.00},
-            {"name": "CT 500/5A, VA-5", "brand": "", "hsn": "85043100", "rate": 0.00},
+            {"name": "CT 400/5A, VA-5", "brand": "", "hsn": "85043100", "rate": 0000.00},
+            {"name": "CT 300/5A, VA-5", "brand": "", "hsn": "85043100", "rate": 0000.00},
+            {"name": "CT 600/5A, VA-5", "brand": "", "hsn": "85043100", "rate": 0000.00},
+            {"name": "CT 500/5A, VA-5", "brand": "", "hsn": "85043100", "rate": 2325.00},
             {"name": "CT 250/5A, VA-5", "brand": "", "hsn": "85043100", "rate": 1575.00},
         ],
     },
     "Water meter": {
         "default_gst": 18.0,
-        "default_hsn": "",
+        "default_hsn": "90280310",
         "items": [
-            {"name": "Water Meter 15 MM", "brand": "Everest", "hsn": "", "rate": 0.00},
+            {"name": "Water Meter 15 MM", "brand": "Everest", "hsn": "90280310", "rate": 0.00},
         ],
     },
     "VisionTek Ongrid inverters": {
@@ -143,9 +146,9 @@ CATALOG = {
     },
     "Water level controller": {
         "default_gst": 18.0,
-        "default_hsn": "",
+        "default_hsn": "90261090",
         "items": [
-            {"name": "Water Level Controller", "brand": "Electrogen", "hsn": "", "rate": 2250.00},
+            {"name": "Water Level Controller", "brand": "Electrogen", "hsn": "90261090", "rate": 2250.00},
         ],
     },
 }
