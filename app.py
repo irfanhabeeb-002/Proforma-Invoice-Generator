@@ -2,8 +2,9 @@ import io
 import base64
 import re
 import html
-import socket
 import datetime
+import uuid
+import hashlib
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP, ROUND_CEILING
 from pathlib import Path
@@ -26,6 +27,15 @@ from catalog import (
     CUSTOM_OPTION,
     get_product_display_label,
     get_product_invoice_description,
+)
+from supabase_db import (
+    DEFAULT_EMPLOYEES,
+    is_supabase_configured,
+    fetch_active_employees,
+    allocate_pi_record,
+    record_download_event,
+    fetch_pi_history,
+    get_suggested_onedrive_path,
 )
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -133,18 +143,6 @@ st.markdown(
 
 today = date.today()
 
-def get_pi_no(customer_name: str = "") -> str:
-    raw_hostname = socket.gethostname()
-    hostname = raw_hostname.split(".")[0] if "." in raw_hostname else raw_hostname
-    hostname = re.sub(r"[^A-Za-z0-9_-]+", "_", hostname).strip("_") or "HOST"
-    date_str = datetime.datetime.now().strftime("%Y%m%d")
-    safe_cust = safe_filename(customer_name) if customer_name and customer_name.strip() else ""
-    if safe_cust and safe_cust != "Customer":
-        return f"PI-{hostname}-{date_str}-{safe_cust}"
-    return f"PI-{hostname}-{date_str}"
-
-pi_no = get_pi_no("")
-
 # Helper financial math functions
 def money(value):
     return Decimal(str(value or 0)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
@@ -160,8 +158,15 @@ def P(text, style):
     return Paragraph(text, style)
 
 # PDF Generation Function
-def make_pdf(customer, items, pi_no_override=None):
-    current_pi = pi_no_override or get_pi_no(customer)
+def make_pdf(customer, items, pi_no_override=None, invoice_date=None):
+    current_pi = pi_no_override or "PI-DRAFT"
+    doc_date = invoice_date if invoice_date else today
+    if isinstance(doc_date, str):
+        try:
+            doc_date = datetime.datetime.strptime(doc_date[:10], "%Y-%m-%d").date()
+        except Exception:
+            doc_date = today
+    doc_date_str = doc_date.strftime("%d.%m.%Y")
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -232,7 +237,7 @@ def make_pdf(customer, items, pi_no_override=None):
     bill = Table([[
         P("BILL TO", styles["Section"]),
         "",
-        P(f"<b>Date:</b> {today.strftime('%d.%m.%Y')}<br/><b>P.I No:</b> {html.escape(current_pi)}", styles["SmallBoldE"]),
+        P(f"<b>Date:</b> {doc_date_str}<br/><b>P.I No:</b> {html.escape(current_pi)}", styles["SmallBoldE"]),
     ]], colWidths=[50 * mm, 63 * mm, 65 * mm])
     bill.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (0, 0), BRAND_TEAL),
@@ -376,16 +381,189 @@ import quotation
 importlib.reload(quotation)
 from quotation import render_quotation_ui
 
+# ---- PI HISTORY UI ----
+def render_pi_history_ui():
+    st.subheader("Proforma Invoice Records & History")
+    st.caption("Search, filter, and re-download previously finalized proforma invoices without allocating new numbers.")
+
+    if not is_supabase_configured():
+        st.warning(
+            "⚠️ **Supabase Connection Not Configured.**\n\n"
+            "History requires a configured Supabase database. Add `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` to your Streamlit secrets."
+        )
+        return
+
+    # Filters
+    f_col1, f_col2, f_col3, f_col4 = st.columns([2, 1, 1, 1.5])
+    with f_col1:
+        search_query = st.text_input("🔍 Search", placeholder="PI No, Customer, Filename, Employee...")
+    with f_col2:
+        year_opt = ["All", 2026, 2025, 2024]
+        selected_year_str = st.selectbox("Year", options=year_opt, index=0)
+        selected_year = int(selected_year_str) if selected_year_str != "All" else None
+    with f_col3:
+        month_opt = ["All"] + [f"{m:02d}" for m in range(1, 13)]
+        selected_month_str = st.selectbox("Month", options=month_opt, index=0)
+        selected_month = int(selected_month_str) if selected_month_str != "All" else None
+    with f_col4:
+        employees = fetch_active_employees()
+        emp_filter = st.selectbox("Created By", options=["All"] + employees, index=0)
+
+    records = fetch_pi_history(
+        search_query=search_query,
+        year_filter=selected_year,
+        month_filter=selected_month,
+        employee_filter=emp_filter,
+    )
+
+    if not records:
+        st.info("No proforma invoice records found matching the specified filters.")
+        return
+
+    st.markdown(f"**Found {len(records)} record(s)**")
+
+    # Display table of records
+    display_rows = []
+    for r in records:
+        display_rows.append({
+            "PI Number": r.get("pi_number", ""),
+            "Customer Name": r.get("customer_name", ""),
+            "PI Date": str(r.get("pi_date", "")),
+            "Total Amount (₹)": f"₹ {float(r.get('grand_total', 0.0)):,.2f}",
+            "Created By": r.get("created_by_employee", ""),
+            "Downloaded By": r.get("latest_downloaded_by") or "—",
+            "Download Initiated At": str(r.get("download_initiated_at") or "—")[:19],
+            "Status": r.get("status", "Finalized"),
+            "Filename": r.get("filename", ""),
+        })
+
+    st.dataframe(pd.DataFrame(display_rows), use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+    st.subheader("Re-download Existing Proforma Invoice")
+    st.caption("Select an existing invoice to view details, regenerate the exact PDF, and download without allocating a new number.")
+
+    rec_options = {
+        f"{r['pi_number']} | {r['customer_name']} | ₹{float(r.get('grand_total', 0)):,.2f} ({r.get('pi_date')})": r
+        for r in records
+    }
+    selected_label = st.selectbox("Select Proforma Invoice to Re-download", options=list(rec_options.keys()))
+    if selected_label:
+        sel_rec = rec_options[selected_label]
+        
+        c1, c2 = st.columns([1.5, 1])
+        with c1:
+            st.markdown(f"**PI Number:** `{sel_rec['pi_number']}`")
+            st.markdown(f"**Customer:** {sel_rec['customer_name']}")
+            st.markdown(f"**Date:** {sel_rec['pi_date']}")
+            st.markdown(f"**Filename:** `{sel_rec['filename']}`")
+        with c2:
+            st.markdown(f"**Created By:** {sel_rec['created_by_employee']}")
+            st.markdown(f"**Status:** {sel_rec.get('status', 'Finalized')}")
+            st.markdown(f"**Latest Downloader:** {sel_rec.get('latest_downloaded_by') or 'None'}")
+            st.markdown(f"**Downloads Count:** {sel_rec.get('download_count', 0)}")
+
+        # Dropdown to choose downloader for tracking
+        re_downloader = st.selectbox(
+            "Employee Re-downloading *",
+            options=employees,
+            index=None,
+            placeholder="Select your name...",
+            key=f"emp_redl_{sel_rec['pi_number']}",
+        )
+
+        # Suggested onedrive path
+        pi_d = today
+        try:
+            pi_d = datetime.datetime.strptime(str(sel_rec['pi_date'])[:10], "%Y-%m-%d").date()
+        except Exception:
+            pass
+        st.info(f"📁 **Suggested OneDrive Destination:** `{get_suggested_onedrive_path(pi_d)}`")
+
+        # Regenerate exact PDF using stored items
+        hist_items = sel_rec.get("items", [])
+        hist_pdf_bytes, _, _, _ = make_pdf(
+            customer=sel_rec["customer_name"],
+            items=hist_items,
+            pi_no_override=sel_rec["pi_number"],
+            invoice_date=pi_d,
+        )
+
+        # --- Two-step history re-download flow ---
+        ready_key      = f"hist_dl_ready_{sel_rec['pi_number']}"
+        err_key        = f"hist_dl_error_{sel_rec['pi_number']}"
+        tracked_by_key = f"hist_dl_tracked_by_{sel_rec['pi_number']}"
+
+        # If the employee selection changed since last tracking, reset the ready state
+        if re_downloader != st.session_state.get(tracked_by_key):
+            st.session_state[ready_key] = False
+            st.session_state[err_key]   = None
+
+        if not st.session_state.get(ready_key):
+            # Step 1: Prepare (track) the download
+            def on_hist_prepare():
+                if re_downloader:
+                    st.session_state[err_key] = None
+                    try:
+                        record_download_event(sel_rec["pi_number"], re_downloader)
+                        st.session_state[ready_key]      = True
+                        st.session_state[tracked_by_key] = re_downloader
+                    except RuntimeError as e:
+                        st.session_state[err_key] = str(e)
+
+            st.button(
+                f"📋 Prepare Re-download ({sel_rec['filename']})",
+                on_click=on_hist_prepare,
+                disabled=not bool(re_downloader),
+                use_container_width=True,
+                key=f"hist_prep_btn_{sel_rec['pi_number']}",
+                type="primary",
+            )
+            if not re_downloader:
+                st.caption("⚠️ Please select your name under **Employee Re-downloading *** to enable download.")
+            if st.session_state.get(err_key):
+                st.error(f"❌ Download tracking failed: {st.session_state[err_key]}")
+        else:
+            # Step 2: Tracking confirmed — show the actual download button.
+            # on_click clears ready state so the next download requires a fresh tracking event.
+            def on_hist_dl_click():
+                st.session_state[ready_key]      = False
+                st.session_state[tracked_by_key] = None
+
+            tracked_by = st.session_state.get(tracked_by_key, re_downloader)
+            st.success(f"✅ Tracking recorded for **{tracked_by}**. Click below to download.")
+            st.download_button(
+                label=f"⬇ Re-download Proforma Invoice PDF ({sel_rec['filename']})",
+                data=hist_pdf_bytes,
+                file_name=sel_rec["filename"],
+                mime="application/pdf",
+                type="primary",
+                use_container_width=True,
+                on_click=on_hist_dl_click,
+                key=f"hist_dl_btn_{sel_rec['pi_number']}",
+            )
+            st.caption(f"PI number `{sel_rec['pi_number']}` and filename are preserved for every repeat download.")
+
+        with st.expander("Document Preview"):
+            pdf_viewer(
+                input=hist_pdf_bytes,
+                width="100%",
+                height=800,
+                key=f"hist_pv_{sel_rec['pi_number']}",
+            )
+
+
 # ---- MODE TOGGLE ----
 if "app_mode" not in st.session_state:
     st.session_state["app_mode"] = "Proforma Invoice Generator"
 
+mode_options = ["Proforma Invoice Generator", "Quotation Generator", "PI History"]
+cur_mode_index = mode_options.index(st.session_state["app_mode"]) if st.session_state["app_mode"] in mode_options else 0
+
 mode = st.radio(
     "Select Generator",
-    options=["Proforma Invoice Generator", "Quotation Generator"],
-    index=["Proforma Invoice Generator", "Quotation Generator"].index(
-        st.session_state["app_mode"]
-    ),
+    options=mode_options,
+    index=cur_mode_index,
     horizontal=True,
     key="app_mode_radio",
     label_visibility="collapsed",
@@ -401,10 +579,25 @@ if LOGO_PATH.exists():
         logo_b64 = base64.b64encode(f.read()).decode()
 
 is_quote_mode = st.session_state["app_mode"] == "Quotation Generator"
-header_title = "Quotation Generator" if is_quote_mode else "Proforma Invoice Generator"
-header_sub = "Electrogen Sales Workplace" if is_quote_mode else f"GSTIN: {GSTIN} &nbsp;|&nbsp; Electrogen Sales Workplace"
-header_ref_label = "Qt Ref" if is_quote_mode else "P.I No"
-header_ref_val = "Electrogen/Mktg" if is_quote_mode else get_pi_no(st.session_state.get("customer_name", ""))
+is_hist_mode = st.session_state["app_mode"] == "PI History"
+if is_quote_mode:
+    header_title = "Quotation Generator"
+    header_sub = "Electrogen Sales Workplace"
+    header_ref_label = "Qt Ref"
+    header_ref_val = "Electrogen/Mktg"
+elif is_hist_mode:
+    header_title = "Proforma Invoice History"
+    header_sub = f"GSTIN: {GSTIN} &nbsp;|&nbsp; Electrogen Sales Workplace"
+    header_ref_label = "Database"
+    header_ref_val = "Archive"
+else:
+    header_title = "Proforma Invoice Generator"
+    header_sub = f"GSTIN: {GSTIN} &nbsp;|&nbsp; Electrogen Sales Workplace"
+    header_ref_label = "P.I No"
+    if st.session_state.get("pi_finalized") and st.session_state.get("pi_allocated_record"):
+        header_ref_val = st.session_state["pi_allocated_record"]["pi_number"]
+    else:
+        header_ref_val = "DRAFT"
 
 if logo_b64:
     st.markdown(
@@ -447,12 +640,66 @@ if st.session_state["app_mode"] == "Quotation Generator":
     st.stop()
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PROFORMA INVOICE GENERATOR  (everything below is unchanged)
+# PI HISTORY
+# ─────────────────────────────────────────────────────────────────────────────
+if st.session_state["app_mode"] == "PI History":
+    render_pi_history_ui()
+    st.stop()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PROFORMA INVOICE GENERATOR
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ---- SESSION STATE INITIALIZATION ----
 if "customer_name" not in st.session_state:
     st.session_state["customer_name"] = ""
+
+if "pi_request_id" not in st.session_state or not st.session_state["pi_request_id"]:
+    st.session_state["pi_request_id"] = str(uuid.uuid4())
+
+if "created_by_employee" not in st.session_state:
+    st.session_state["created_by_employee"] = None
+
+if "pi_finalized" not in st.session_state:
+    st.session_state["pi_finalized"] = False
+
+if "pi_allocated_record" not in st.session_state:
+    st.session_state["pi_allocated_record"] = None
+
+if "pi_finalized_pdf" not in st.session_state:
+    st.session_state["pi_finalized_pdf"] = None
+
+if "download_initiated" not in st.session_state:
+    st.session_state["download_initiated"] = False
+    st.session_state["download_track_error"] = None
+    st.session_state["last_downloader"] = None
+
+def reset_pi_draft():
+    st.session_state["pi_request_id"] = str(uuid.uuid4())
+    st.session_state["customer_name"] = ""
+    st.session_state["created_by_employee"] = None
+    st.session_state["pi_finalized"] = False
+    st.session_state["pi_allocated_record"] = None
+    st.session_state["pi_finalized_pdf"] = None
+    st.session_state["download_initiated"] = False
+    st.session_state["download_track_error"] = None
+    st.session_state["last_downloader"] = None
+    st.session_state["items"] = [
+        {
+            "id": 1,
+            "category": None,
+            "product_key": None,
+            "description": "",
+            "brand": "",
+            "hsn": "",
+            "rate": 0.0,
+            "quantity": 1,
+            "gst": 18.0,
+            "is_custom": False,
+            "edit_mode": False,
+        }
+    ]
+    st.session_state["item_counter"] = 1
 
 if "items" not in st.session_state:
     st.session_state["items"] = [
@@ -472,27 +719,61 @@ if "items" not in st.session_state:
     ]
     st.session_state["item_counter"] = 1
 
-# ---- STEP 1: CUSTOMER NAME ----
-st.subheader("1. Customer Information")
-customer_name = st.text_input(
-    "Bill To / Customer Name",
-    value=st.session_state["customer_name"],
-    placeholder="Enter customer or company name (e.g. WEGASOLAR RENEWABLES)",
-    help="Type the customer or company name. The invoice updates live.",
-)
-st.session_state["customer_name"] = customer_name
+is_finalized = bool(st.session_state.get("pi_finalized", False))
 
-current_pi_display = get_pi_no(customer_name)
-st.caption(f"Invoice Date: **{today.strftime('%d.%m.%Y')}** &nbsp;·&nbsp; P.I Number: **{current_pi_display}**")
+# ---- STEP 1: CUSTOMER & EMPLOYEE INFO ----
+st.subheader("1. Customer & Employee Information")
+
+col_cust, col_emp = st.columns([1.6, 1.0])
+with col_cust:
+    customer_name = st.text_input(
+        "Bill To / Customer Name *",
+        value=st.session_state["customer_name"],
+        placeholder="Enter customer or company name (e.g. WEGASOLAR RENEWABLES)",
+        help="Type the customer or company name.",
+        disabled=is_finalized,
+    )
+    st.session_state["customer_name"] = customer_name
+
+with col_emp:
+    active_employees = fetch_active_employees()
+    cur_emp = st.session_state.get("created_by_employee")
+    emp_idx = active_employees.index(cur_emp) if cur_emp in active_employees else None
+    selected_employee = st.selectbox(
+        "Employee / Created By *",
+        options=active_employees,
+        index=emp_idx,
+        placeholder="Select your name...",
+        help="Select the employee creating this Proforma Invoice.",
+        disabled=is_finalized,
+    )
+    st.session_state["created_by_employee"] = selected_employee
+
+if is_finalized and st.session_state.get("pi_allocated_record"):
+    rec = st.session_state["pi_allocated_record"]
+    st.success(
+        f"🔒 **PI Finalized & Locked:** `{rec.get('pi_number')}` &nbsp;·&nbsp; "
+        f"Filename: `{rec.get('filename')}` &nbsp;·&nbsp; "
+        f"Created By: **{rec.get('created_by_employee')}**"
+    )
+else:
+    st.caption(
+        f"Invoice Date: **{today.strftime('%d.%m.%Y')}** &nbsp;·&nbsp; "
+        f"P.I Number: **[Assigned on Finalize & Save via Supabase]** &nbsp;·&nbsp; "
+        f"Draft ID: `{st.session_state['pi_request_id'][:8]}...`"
+    )
 
 st.divider()
 
 # ---- STEP 2: PRODUCTS & PARTICULARS ----
 st.subheader("2. Items & Particulars")
-st.caption(
-    "Select a product category, then choose the product from the price list. "
-    "HSN/SAC and Rate display automatically without manual typing."
-)
+if is_finalized:
+    st.info("🔒 **This Proforma Invoice is finalized.** Line items are locked to prevent accidental modification.")
+else:
+    st.caption(
+        "Select a product category, then choose the product from the price list. "
+        "HSN/SAC and Rate display automatically without manual typing."
+    )
 
 items_to_delete = []
 
@@ -501,7 +782,7 @@ for idx, item in enumerate(st.session_state["items"]):
     with st.container(border=True):
         col_hdr, col_del = st.columns([0.88, 0.12])
         col_hdr.markdown(f"**Item {idx + 1}**")
-        if len(st.session_state["items"]) > 1:
+        if len(st.session_state["items"]) > 1 and not is_finalized:
             if col_del.button("🗑 Remove", key=f"del_{item_id}", use_container_width=True):
                 items_to_delete.append(item_id)
 
@@ -518,10 +799,11 @@ for idx, item in enumerate(st.session_state["items"]):
             index=cat_index,
             placeholder="Select product category...",
             key=f"cat_select_{item_id}",
+            disabled=is_finalized,
         )
 
         # If category changed, reset product and apply category defaults
-        if selected_cat != current_cat:
+        if selected_cat != current_cat and not is_finalized:
             item["category"] = selected_cat
             item["product_key"] = None
             item["description"] = ""
@@ -557,10 +839,11 @@ for idx, item in enumerate(st.session_state["items"]):
                 index=prod_index,
                 placeholder="Type letters or select from price list...",
                 key=f"prod_select_{item_id}_{item['category']}",
+                disabled=is_finalized,
             )
 
             # When product selection changes, update HSN, Rate, and description immediately
-            if selected_prod_label != current_prod_label:
+            if selected_prod_label != current_prod_label and not is_finalized:
                 item["product_key"] = selected_prod_label
                 if selected_prod_label == CUSTOM_OPTION:
                     item["is_custom"] = True
@@ -587,13 +870,13 @@ for idx, item in enumerate(st.session_state["items"]):
                 value=item.get("description", ""),
                 placeholder="Enter custom product name / particulars...",
                 key=f"custom_desc_{item_id}",
+                disabled=is_finalized,
             )
 
         # Row B: HSN, Rate, Quantity, GST, Line Total
         c_hsn, c_rate, c_qty, c_gst, c_total = st.columns([1.1, 1.2, 0.9, 1.0, 1.3])
 
         # HSN/SAC Field:
-        # Automatic display box (no cursor) when catalog product is chosen, or input if custom/blank/editing
         needs_hsn_input = item.get("is_custom") or item.get("edit_mode") or (item.get("product_key") and not item.get("hsn"))
         if needs_hsn_input:
             item["hsn"] = c_hsn.text_input(
@@ -601,6 +884,7 @@ for idx, item in enumerate(st.session_state["items"]):
                 value=item.get("hsn", ""),
                 placeholder="Enter HSN/SAC",
                 key=f"hsn_input_{item_id}_{item.get('category')}",
+                disabled=is_finalized,
             )
         else:
             hsn_display = item.get("hsn") or ("— (Blank)" if item.get("product_key") else "—")
@@ -615,7 +899,6 @@ for idx, item in enumerate(st.session_state["items"]):
             )
 
         # Rate Field:
-        # Automatic display box (no cursor, NO +/- signs) when catalog price exists, or input if custom/0.00/editing
         needs_rate_input = item.get("is_custom") or item.get("edit_mode") or (item.get("product_key") and item.get("rate", 0.0) == 0.0)
         if needs_rate_input:
             rate_val = c_rate.number_input(
@@ -626,6 +909,7 @@ for idx, item in enumerate(st.session_state["items"]):
                 format="%.2f",
                 key=f"rate_input_{item_id}_{item.get('category')}",
                 help="Type the basic rate in Rupees.",
+                disabled=is_finalized,
             )
             item["rate"] = float(rate_val)
         else:
@@ -645,7 +929,7 @@ for idx, item in enumerate(st.session_state["items"]):
                 unsafe_allow_html=True,
             )
 
-        # Quantity Input: strictly positive integers >= 1 (typing 0 alone or negative disallowed)
+        # Quantity Input:
         current_qty = max(1, int(item.get("quantity", 1)))
         item["quantity"] = c_qty.number_input(
             "Quantity",
@@ -654,9 +938,10 @@ for idx, item in enumerate(st.session_state["items"]):
             value=current_qty,
             key=f"qty_{item_id}",
             help="Quantity must be at least 1.",
+            disabled=is_finalized,
         )
 
-        # Automated GST Rate: Non-selectable, strictly automated based on category
+        # Automated GST Rate:
         if item.get("category") in CATALOG:
             item["gst"] = float(CATALOG[item["category"]]["default_gst"])
         else:
@@ -690,8 +975,8 @@ for idx, item in enumerate(st.session_state["items"]):
             unsafe_allow_html=True,
         )
 
-        # Small option to toggle custom rate override for catalog items if needed
-        if item.get("product_key") and not item.get("is_custom"):
+        # Edit override checkbox
+        if item.get("product_key") and not item.get("is_custom") and not is_finalized:
             checkbox_label = "✏️ Edit Product Description / Rate / HSN manually for this item" if is_ct else "✏️ Edit Rate / HSN manually for this item"
             override = st.checkbox(checkbox_label, value=item.get("edit_mode", False), key=f"edit_toggle_{item_id}")
             if override != item.get("edit_mode", False):
@@ -699,29 +984,30 @@ for idx, item in enumerate(st.session_state["items"]):
                 st.rerun()
 
 # Handle item deletion
-if items_to_delete:
+if items_to_delete and not is_finalized:
     st.session_state["items"] = [it for it in st.session_state["items"] if it["id"] not in items_to_delete]
     st.rerun()
 
 # Button to Add Product Row
-if st.button("＋ Add Product Item", use_container_width=False, type="secondary"):
-    st.session_state["item_counter"] += 1
-    st.session_state["items"].append({
-        "id": st.session_state["item_counter"],
-        "category": None,
-        "product_key": None,
-        "description": "",
-        "brand": "",
-        "hsn": "",
-        "rate": 0.0,
-        "quantity": 1,
-        "gst": 18.0,
-        "is_custom": False,
-        "edit_mode": False,
-    })
-    st.rerun()
+if not is_finalized:
+    if st.button("＋ Add Product Item", use_container_width=False, type="secondary"):
+        st.session_state["item_counter"] += 1
+        st.session_state["items"].append({
+            "id": st.session_state["item_counter"],
+            "category": None,
+            "product_key": None,
+            "description": "",
+            "brand": "",
+            "hsn": "",
+            "rate": 0.0,
+            "quantity": 1,
+            "gst": 18.0,
+            "is_custom": False,
+            "edit_mode": False,
+        })
+        st.rerun()
 
-# ---- STEP 3: LIVE INVOICE PREVIEW & PDF DOWNLOAD ----
+# ---- STEP 3: LIVE PREVIEW & FINALIZATION ----
 st.divider()
 st.subheader("3. Live Invoice Preview & PDF Generation")
 
@@ -731,7 +1017,9 @@ valid_items = [
 ]
 
 if not customer_name.strip():
-    st.info("💡 **Next step:** Enter the **Customer Name** above to generate the live invoice preview and download the PDF.")
+    st.info("💡 **Next step:** Enter the **Bill To / Customer Name** above to generate the live invoice preview.")
+elif not selected_employee:
+    st.info("💡 **Next step:** Select your name under **Employee / Created By *** above to proceed.")
 elif not valid_items:
     st.info("💡 **Next step:** Select at least one product from the categories above to populate the invoice.")
 else:
@@ -757,7 +1045,6 @@ else:
     tax_total = sum(tax_by_rate.values(), Decimal("0.00"))
     raw_grand_total = subtotal + tax_total
     grand_total = money(raw_grand_total.to_integral_value(rounding=ROUND_CEILING))
-    round_off = grand_total - raw_grand_total
 
     # Metrics summary cards
     if len(tax_by_rate) == 1:
@@ -773,35 +1060,198 @@ else:
 
     st.dataframe(pd.DataFrame(preview_data), use_container_width=True, hide_index=True)
 
-    # Generate PDF
-    current_pi_no = get_pi_no(customer_name)
-    pdf_filename = f"{current_pi_no}.pdf"
+    if not is_finalized:
+        # DRAFT STATE: Show draft PDF preview and Finalize button
+        draft_pi_label = f"PI-{today.year}-DRAFT"
+        draft_pdf_bytes, _, _, _ = make_pdf(customer_name, valid_items, pi_no_override=draft_pi_label)
+        draft_hash = hashlib.md5(draft_pdf_bytes).hexdigest()[:8]
 
-    pdf_bytes, _, _, _ = make_pdf(customer_name, valid_items, pi_no_override=current_pi_no)
+        st.markdown("---")
+        st.subheader("Finalize & Allocate Official PI Number")
+        st.caption(
+            "Review the items and customer details above. When ready, click **Finalize & Save** below. "
+            "Supabase will atomically allocate the official sequential PI number (e.g. `PI-2026-001`), "
+            "stamp it onto the PDF, record the creation audit trail, and enable PDF download."
+        )
 
-    import hashlib
-    pdf_hash = hashlib.md5(pdf_bytes).hexdigest()[:8]
+        col_save, col_info = st.columns([1, 1.2])
+        with col_save:
+            finalize_clicked = st.button(
+                "🔒 Finalize & Save Proforma Invoice",
+                type="primary",
+                use_container_width=True,
+                key="btn_finalize_save",
+            )
 
-    st.write(f"**Generated Filename:** `{pdf_filename}`")
+        with col_info:
+            onedrive_dest = get_suggested_onedrive_path(today)
+            st.caption(f"📁 Destination: `{onedrive_dest}`")
 
-    st.download_button(
-        label=f"⬇ Download Proforma Invoice PDF ({pdf_filename})",
-        data=pdf_bytes,
-        file_name=pdf_filename,
-        mime="application/pdf",
-        type="primary",
-        use_container_width=True,
-        disabled=not bool(customer_name.strip()),
-        key=f"download_pdf_{pdf_hash}",
-    )
+        if finalize_clicked:
+            if not customer_name.strip():
+                st.error("❌ Please enter the Bill To / Customer Name.")
+            elif not selected_employee or not str(selected_employee).strip():
+                st.error("❌ Please select your name under **Employee / Created By *** before finalizing.")
+            elif not is_supabase_configured():
+                st.error(
+                    "❌ **Supabase Connection Not Configured.**\n\n"
+                    "Supabase must be the single source of truth for PI numbering. "
+                    "Please configure `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` in Streamlit secrets "
+                    "(`.streamlit/secrets.toml` or Streamlit Cloud Settings)."
+                )
+            else:
+                with st.spinner("Connecting to Supabase and allocating sequential PI number..."):
+                    try:
+                        record = allocate_pi_record(
+                            request_id=st.session_state["pi_request_id"],
+                            customer_name=customer_name,
+                            created_by_employee=st.session_state["created_by_employee"],
+                            pi_date=today,
+                            subtotal=float(subtotal),
+                            tax_total=float(tax_total),
+                            grand_total=float(grand_total),
+                            items=valid_items,
+                        )
+                        allocated_pi_no = record["pi_number"]
+                        # Generate final PDF with the allocated official PI number
+                        final_pdf, _, _, _ = make_pdf(customer_name, valid_items, pi_no_override=allocated_pi_no)
+                        st.session_state["pi_finalized"] = True
+                        st.session_state["pi_allocated_record"] = record
+                        st.session_state["pi_finalized_pdf"] = final_pdf
+                        st.session_state["download_initiated"] = False
+                        st.session_state["download_track_error"] = None
+                        st.session_state["last_downloader"] = None
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"❌ Failed to finalize Proforma Invoice: {str(exc)}")
 
-    st.markdown("#### Embedded PDF Document Preview")
-    pdf_viewer(
-        input=pdf_bytes,
-        width="100%",
-        height=850,
-        key=f"proforma_pdf_preview_{pdf_hash}",
-    )
+        st.markdown("#### Draft Document Preview (Unofficial)")
+        st.caption("P.I Number is marked as DRAFT until finalized and saved.")
+        pdf_viewer(
+            input=draft_pdf_bytes,
+            width="100%",
+            height=850,
+            key=f"proforma_draft_preview_{draft_hash}",
+        )
+
+    else:
+        # FINALIZED STATE: Official PI allocated and locked
+        record = st.session_state["pi_allocated_record"]
+        pi_number = record.get("pi_number", "PI-FINAL")
+        pdf_filename = record.get("filename", f"{pi_number}_{safe_filename(customer_name)}.pdf")
+        onedrive_folder = get_suggested_onedrive_path(today)
+
+        st.success(
+            f"### ✅ Proforma Invoice Finalized: `{pi_number}`\n\n"
+            f"**Allocated PI Number:** `{pi_number}` &nbsp;|&nbsp; "
+            f"**Created By:** `{record.get('created_by_employee')}` &nbsp;|&nbsp; "
+            f"**Grand Total:** ₹{float(record.get('grand_total', grand_total)):,.2f}"
+        )
+
+        st.info(
+            f"📁 **Suggested OneDrive Destination Folder:**\n\n"
+            f"`{onedrive_folder}`\n\n"
+            f"*Please manually move or save your downloaded PDF to this folder in your company OneDrive.*"
+        )
+
+        st.write(f"**Generated Filename:** `{pdf_filename}`")
+
+        # Select downloader employee explicitly (do not assume creator is downloader)
+        col_dl_emp, col_dl_stat = st.columns([1.5, 1])
+        with col_dl_emp:
+            main_downloader = st.selectbox(
+                "Employee Downloading *",
+                options=active_employees,
+                index=None,
+                placeholder="Select your name to download...",
+                key=f"main_dl_emp_{pi_number}",
+                help="Select your name before downloading. This is recorded in the download audit trail.",
+            )
+
+        # If the employee selection changed since last tracking, reset the ready state
+        if main_downloader != st.session_state.get("last_downloader"):
+            st.session_state["download_initiated"] = False
+            st.session_state["download_track_error"] = None
+
+        with col_dl_stat:
+            if st.session_state.get("download_initiated", False):
+                st.markdown(
+                    f"""
+                    <div style="padding-top: 28px;">
+                        <span style="color: #006A67; font-weight: 600;">🟢 Download initiated</span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(
+                    f"""
+                    <div style="padding-top: 28px;">
+                        <span style="color: #555;">Status: <b>{record.get('status', 'Finalized')}</b></span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+        # --- Two-step main PI download flow ---
+        if not st.session_state.get("download_initiated", False):
+            # Step 1: Prepare (track) the download
+            def on_final_pi_prepare():
+                if main_downloader:
+                    st.session_state["download_track_error"] = None
+                    try:
+                        record_download_event(pi_number, main_downloader)
+                        st.session_state["download_initiated"] = True
+                        st.session_state["last_downloader"] = main_downloader
+                    except RuntimeError as e:
+                        st.session_state["download_track_error"] = str(e)
+
+            st.button(
+                f"📋 Prepare Download ({pdf_filename})",
+                on_click=on_final_pi_prepare,
+                disabled=not bool(main_downloader),
+                use_container_width=True,
+                key=f"prepare_pdf_{pi_number}",
+                type="primary",
+            )
+            if not main_downloader:
+                st.caption("⚠️ Please select your name under **Employee Downloading *** to enable download.")
+            if st.session_state.get("download_track_error"):
+                st.error(f"❌ Download tracking failed: {st.session_state['download_track_error']}")
+        else:
+            # Step 2: Tracking confirmed — show the actual download button.
+            # on_click clears ready state so the next download requires a fresh tracking event.
+            def on_final_dl_click():
+                st.session_state["download_initiated"] = False
+                st.session_state["last_downloader"]    = None
+
+            tracked_by = st.session_state.get("last_downloader", main_downloader)
+            st.success(f"✅ Tracking recorded for **{tracked_by}**. Click below to download.")
+            st.download_button(
+                label=f"⬇ Download Proforma Invoice PDF ({pdf_filename})",
+                data=st.session_state["pi_finalized_pdf"],
+                file_name=pdf_filename,
+                mime="application/pdf",
+                type="primary",
+                use_container_width=True,
+                on_click=on_final_dl_click,
+                key=f"download_pdf_{pi_number}",
+            )
+            st.caption(f"PI number `{pi_number}` and filename are preserved for every repeat download.")
+
+
+        st.markdown("")
+        col_new, _ = st.columns([1, 2])
+        with col_new:
+            st.button("➕ Create New Proforma Invoice", on_click=reset_pi_draft, type="secondary")
+
+        st.markdown("#### Embedded Final PDF Preview")
+        pdf_viewer(
+            input=st.session_state["pi_finalized_pdf"],
+            width="100%",
+            height=850,
+            key=f"proforma_final_preview_{pi_number}",
+        )
 
 with st.expander("ℹ️ Company & Bank Configuration Details"):
     st.write(f"**GSTIN:** {GSTIN}")
